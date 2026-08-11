@@ -67,7 +67,7 @@ function getBotToken() {
 }
 
 function getWebAppUrl() {
-  const value = process.env["TELEGRAM_WEB_APP_URL"]?.trim();
+  const value = (process.env["TELEGRAM_WEB_APP_URL"] ?? process.env["RENDER_EXTERNAL_URL"])?.trim();
   if (!value) return undefined;
   return value.startsWith("http://") || value.startsWith("https://")
     ? value
