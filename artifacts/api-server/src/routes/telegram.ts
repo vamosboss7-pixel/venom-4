@@ -671,10 +671,12 @@ async function handleTelegramUpdate(update: TelegramUpdate) {
 
 router.post("/telegram/webhook", async (req, res) => {
   if (!isTelegramWebhookRequest(req)) {
+    logger.warn({ hasSecretHeader: Boolean(req.header("x-telegram-bot-api-secret-token")), hasConfiguredSecret: Boolean(getWebhookSecret()) }, "Telegram webhook rejected: secret mismatch");
     res.status(401).json({ error: "Unauthorized" });
     return;
   }
 
+  logger.info({ updateKeys: Object.keys(req.body ?? {}) }, "Telegram webhook update received");
   try {
     await handleTelegramUpdate(req.body as TelegramUpdate);
     res.sendStatus(200);
@@ -739,6 +741,7 @@ export async function registerTelegramWebhook() {
   }
 
   const secretToken = getWebhookSecret();
+  logger.info({ webhookUrl, hasSecretToken: Boolean(secretToken), hasWebAppUrl: Boolean(webAppUrl) }, "Registering Telegram webhook");
   await telegramRequest("setWebhook", {
     url: webhookUrl,
     ...(secretToken ? { secret_token: secretToken } : {}),
