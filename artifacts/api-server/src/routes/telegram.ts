@@ -46,6 +46,8 @@ type TelegramAuthPayload = {
   initData?: unknown;
 };
 
+type TelegramPollingUpdate = TelegramUpdate & { update_id: number };
+
 type DepositSession =
   | { step: "payment-method" }
   | { step: "amount" }
@@ -723,6 +725,52 @@ router.post("/telegram/auth", async (req, res) => {
   logger.info({ telegramId: user.id, profileFound: Boolean(profile), hasPlayWalletBalance: Boolean(profile?.playWalletBalance), hasWinWalletBalance: Boolean(profile?.winWalletBalance) }, "Mini App wallet profile lookup completed");
   res.json({ user, profile });
 });
+
+function sleep(milliseconds: number) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+export function startTelegramPolling() {
+  const globalState = globalThis as typeof globalThis & { __telegramPolling?: boolean };
+  if (globalState.__telegramPolling) return;
+  globalState.__telegramPolling = true;
+  void (async () => {
+    const token = getBotToken();
+    if (!token) {
+      logger.warn("Telegram polling skipped because TELEGRAM_BOT_TOKEN is missing");
+      return;
+    }
+
+    try {
+      await telegramRequest("deleteWebhook", { drop_pending_updates: false });
+      logger.info("Telegram webhook deleted; long polling started");
+    } catch (error) {
+      logger.error({ err: error }, "Telegram polling could not delete the webhook");
+    }
+
+    let offset = 0;
+    while (true) {
+      try {
+        const updates = await telegramRequest<TelegramPollingUpdate[]>("getUpdates", {
+          offset,
+          timeout: 25,
+          allowed_updates: ["message", "callback_query"],
+        });
+        for (const update of updates) {
+          offset = update.update_id + 1;
+          try {
+            await handleTelegramUpdate(update);
+          } catch (error) {
+            logger.error({ err: error, updateId: update.update_id }, "Telegram polling update handling failed");
+          }
+        }
+      } catch (error) {
+        logger.error({ err: error }, "Telegram polling request failed");
+        await sleep(5000);
+      }
+    }
+  })();
+}
 
 export async function registerTelegramWebhook() {
   const token = getBotToken();
