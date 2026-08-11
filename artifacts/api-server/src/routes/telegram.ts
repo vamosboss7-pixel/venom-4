@@ -743,9 +743,10 @@ export function startTelegramPolling() {
 
     try {
       await telegramRequest("deleteWebhook", { drop_pending_updates: false });
-      logger.info("Telegram webhook deleted; long polling started");
+      const bot = await telegramRequest<{ username?: string }>("getMe", {});
+      logger.info({ botUsername: bot.username ?? "unknown" }, "Telegram webhook deleted; long polling started");
     } catch (error) {
-      logger.error({ err: error }, "Telegram polling could not delete the webhook");
+      logger.error({ err: error }, "Telegram polling could not initialize");
     }
 
     let offset = 0;
@@ -756,6 +757,7 @@ export function startTelegramPolling() {
           timeout: 25,
           allowed_updates: ["message", "callback_query"],
         });
+        logger.info({ updateCount: updates.length, offset }, "Telegram polling response received");
         for (const update of updates) {
           offset = update.update_id + 1;
           try {
