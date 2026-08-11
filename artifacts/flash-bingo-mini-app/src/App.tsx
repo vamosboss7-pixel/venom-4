@@ -511,7 +511,7 @@ function WinnerModal({ card, called, pattern, winnerEffect, prize, winnerName }:
 
 function Play() {
   const [location, setLocation] = useLocation();
-  const [muted, setMuted] = useState(true);
+  const [muted, setMuted] = useState(false);
   const [tab, setTab] = useState<Tab>('bingo');
   const [round, setRound] = useState<RoundData | null>(null);
   const [cards, setCards] = useState<Array<{ id: number; grid: Cell[] }>>([]);
