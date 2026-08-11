@@ -180,11 +180,11 @@ function useTelegramBridge() {
     if (!webApp.initData) return;
     const configuredApiUrl = import.meta.env.VITE_API_BASE_URL;
     const apiUrl = configuredApiUrl
-      ? (configuredApiUrl.startsWith('http') ? configuredApiUrl : `https://${configuredApiUrl}`)
+      ? (configuredApiUrl.startsWith('http') ? configuredApiUrl : `https://${configuredApiUrl}`).replace(/\/$/, '')
       : '';
     void fetch(`${apiUrl}/api/telegram/auth`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', 'x-telegram-init-data': webApp.initData },
       body: JSON.stringify({ initData: webApp.initData }),
     }).then(async (response) => {
       if (!response.ok) return;
