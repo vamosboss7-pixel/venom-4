@@ -687,13 +687,25 @@ router.post("/telegram/webhook", async (req, res) => {
 router.post("/telegram/auth", async (req, res) => {
   const botToken = getBotToken();
   const { initData } = req.body as TelegramAuthPayload;
-  if (!botToken || typeof initData !== "string" || !isValidTelegramInitData(initData, botToken)) {
+  if (!botToken) {
+    logger.warn({ hasInitData: typeof initData === "string" && initData.length > 0 }, "Mini App auth rejected: TELEGRAM_BOT_TOKEN is missing");
+    res.status(401).json({ error: "Invalid Telegram authentication data" });
+    return;
+  }
+  if (typeof initData !== "string" || initData.length === 0) {
+    logger.warn("Mini App auth rejected: Telegram initData is missing");
+    res.status(401).json({ error: "Invalid Telegram authentication data" });
+    return;
+  }
+  if (!isValidTelegramInitData(initData, botToken)) {
+    logger.warn("Mini App auth rejected: Telegram initData is invalid or expired");
     res.status(401).json({ error: "Invalid Telegram authentication data" });
     return;
   }
 
   const user = parseTelegramUser(initData);
   if (!user) {
+    logger.warn("Mini App auth rejected: Telegram user data is missing");
     res.status(401).json({ error: "Telegram user data is missing" });
     return;
   }
@@ -706,6 +718,7 @@ router.post("/telegram/auth", async (req, res) => {
       winWalletBalance: true,
     },
   });
+  logger.info({ telegramId: user.id, profileFound: Boolean(profile), hasPlayWalletBalance: Boolean(profile?.playWalletBalance), hasWinWalletBalance: Boolean(profile?.winWalletBalance) }, "Mini App wallet profile lookup completed");
   res.json({ user, profile });
 });
 
