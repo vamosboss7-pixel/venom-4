@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: flash-bingo
+    name: flash-bingo-api
     env: node
     plan: free
     buildCommand: pnpm install --frozen-lockfile --prod=false && pnpm --filter @workspace/flash-bingo-mini-app run build && pnpm --filter @workspace/api-server run build && pnpm --filter @workspace/db run push
