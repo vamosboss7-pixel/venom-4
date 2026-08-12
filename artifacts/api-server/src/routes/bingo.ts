@@ -77,6 +77,14 @@ function buildCard(cardNumber: number): Array<number | "star"> {
 
 export async function ensureActiveBingoRound() {
   const active = await db.query.bingoRounds.findFirst({ where: inArray(bingoRounds.status, ["selecting", "playing", "active"]), orderBy: [asc(bingoRounds.id)] });
+  if (active?.status === "active") {
+    const [normalized] = await db.update(bingoRounds).set({ status: "playing" }).where(and(eq(bingoRounds.id, active.id), eq(bingoRounds.status, "active"))).returning();
+    return normalized ?? active;
+  }
+  if (active?.status === "selecting" && !active.selectionEndsAt) {
+    const [normalized] = await db.update(bingoRounds).set({ selectionEndsAt: new Date(Date.now() + SELECTION_DURATION_MS) }).where(and(eq(bingoRounds.id, active.id), eq(bingoRounds.status, "selecting"))).returning();
+    return normalized ?? active;
+  }
   if (active) return active;
   const [created] = await db.insert(bingoRounds).values({ status: "selecting", selectionEndsAt: new Date(Date.now() + SELECTION_DURATION_MS) }).returning();
   if (!created) throw new Error("Could not create Bingo round");
