@@ -390,6 +390,7 @@ type ServerCard = { id?: number; cardNumber: number; grid: Cell[] };
 
 function Home() {
   const [, setLocation] = useLocation();
+  const { profile } = useTelegramBridge();
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [muted, setMuted] = useState(true);
   const [countdown, setCountdown] = useState(START_COUNTDOWN);
@@ -481,7 +482,7 @@ function Home() {
   return (
     <AppShell tab={tab} setTab={setTab}>
       {tab === 'wallet' ? <WalletPanel /> : <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-        <Stats play={selected.size * STAKE} pot={Number(round?.pot ?? '0')} cardsTaken={taken.size} />
+        <Stats play={Number(profile?.playWalletBalance ?? '0')} pot={Number(round?.pot ?? '0')} cardsTaken={taken.size} win={Number(profile?.winWalletBalance ?? '0')} />
         <SoundCountdown muted={muted} onToggle={() => setMuted((value) => !value)} countdown={countdown} />
         <div className="min-h-0 flex-1 overflow-y-auto"><NumberGrid selected={selected} taken={taken} onToggle={toggle} /></div>
         {selectedCards.length > 0 && <div className="pointer-events-none absolute bottom-[74px] left-0 right-0 z-10 flex gap-2 overflow-hidden bg-gradient-to-t from-[hsl(161_42%_9%)] to-transparent px-3 pb-2 pt-8">{selectedCards.map((id) => <MiniCard key={id} id={id} grid={buildCard(id)} />)}</div>}
