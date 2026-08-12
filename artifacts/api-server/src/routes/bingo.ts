@@ -160,7 +160,11 @@ router.post("/bingo/cards", async (req, res) => {
   if (!Array.isArray(cardNumbers) || cardNumbers.length < 1 || cardNumbers.length > MAX_CARDS || new Set(cardNumbers).size !== cardNumbers.length || cardNumbers.some((value) => !Number.isInteger(value) || value < 1 || value > CARD_COUNT)) {
     res.status(400).json({ error: `Choose between 1 and ${MAX_CARDS} unique cards from 1 to ${CARD_COUNT}` }); return;
   }
-  const round = await ensureActiveBingoRound();
+  let round = await ensureActiveBingoRound();
+  if (round.status === "selecting" && round.selectionEndsAt && round.selectionEndsAt.getTime() <= Date.now()) {
+    await advanceBingoRound();
+    round = await ensureActiveBingoRound();
+  }
   try {
     const result = await db.transaction(async (tx) => {
       const [lockedRound] = await tx.select().from(bingoRounds).where(eq(bingoRounds.id, round.id)).for("update").limit(1);

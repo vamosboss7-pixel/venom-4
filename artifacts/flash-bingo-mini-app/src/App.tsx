@@ -405,6 +405,11 @@ function Home() {
       if (!response.ok) return;
       const data = await response.json() as RoundData;
       if (cancelled) return;
+      if (roundIdRef.current !== null && roundIdRef.current !== data.id) {
+        setSelected(new Set());
+        purchaseStartedRef.current = false;
+      }
+      roundIdRef.current = data.id;
       setRound(data);
       if (data.status === 'selecting' && data.selectionEndsAt) {
         setCountdown(Math.max(0, Math.ceil((new Date(data.selectionEndsAt).getTime() - Date.now()) / 1000)));
@@ -415,6 +420,7 @@ function Home() {
     return () => { cancelled = true; window.clearInterval(timer); };
   }, []);
   const selectedRef = useRef(selected);
+  const roundIdRef = useRef<number | null>(null);
   const purchaseStartedRef = useRef(false);
   selectedRef.current = selected;
   useEffect(() => {
@@ -430,6 +436,7 @@ function Home() {
             .then(async (response) => {
               if (response.ok) return response.json() as Promise<{ roundId: number }>;
               const body = await response.json().catch(() => ({})) as { error?: string };
+              if (response.status === 409 && body.error === 'Card selection is closed') setSelected(new Set());
               setWarningMessage(response.status === 402 ? (body.error ?? 'Insufficient balance in play and win wallets') : response.status === 409 ? (body.error ?? 'A selected card was just taken') : (body.error ?? 'Card purchase failed'));
               setShowWarning(true);
               window.setTimeout(() => setShowWarning(false), 3000);
