@@ -378,6 +378,9 @@ function telegramHeaders(): Record<string, string> {
 
 type RoundData = {
   id: number;
+  status: string;
+  startedAt: string;
+  selectionEndsAt?: string | null;
   calls: Array<{ number: number; position: number; calledAt: string }>;
   takenCardNumbers: number[];
   pot: string;
@@ -395,7 +398,22 @@ function Home() {
   const [warningMessage, setWarningMessage] = useState('');
   const [round, setRound] = useState<RoundData | null>(null);
   const taken = useMemo(() => new Set(round?.takenCardNumbers ?? []), [round]);
-  useEffect(() => { void fetch(`${getApiUrl()}/api/bingo/round`).then((response) => response.ok ? response.json() as Promise<RoundData> : null).then((data) => { if (data) setRound(data); }).catch(() => undefined); }, []);
+  useEffect(() => {
+    let cancelled = false;
+    const loadRound = async () => {
+      const response = await fetch(`${getApiUrl()}/api/bingo/round`);
+      if (!response.ok) return;
+      const data = await response.json() as RoundData;
+      if (cancelled) return;
+      setRound(data);
+      if (data.status === 'selecting' && data.selectionEndsAt) {
+        setCountdown(Math.max(0, Math.ceil((new Date(data.selectionEndsAt).getTime() - Date.now()) / 1000)));
+      }
+    };
+    void loadRound().catch(() => undefined);
+    const timer = window.setInterval(() => { void loadRound().catch(() => undefined); }, 3000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, []);
   const selectedRef = useRef(selected);
   const purchaseStartedRef = useRef(false);
   selectedRef.current = selected;

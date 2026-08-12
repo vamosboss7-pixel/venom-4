@@ -4,8 +4,9 @@ import { telegramUsers } from "./telegram-users";
 
 export const bingoRounds = pgTable("bingo_rounds", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
-  status: varchar("status", { length: 16 }).notNull().default("active"),
+  status: varchar("status", { length: 16 }).notNull().default("selecting"),
   startedAt: timestamp("started_at", { withTimezone: true }).defaultNow().notNull(),
+  selectionEndsAt: timestamp("selection_ends_at", { withTimezone: true }),
   completedAt: timestamp("completed_at", { withTimezone: true }),
 });
 
