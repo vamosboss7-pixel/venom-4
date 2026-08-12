@@ -174,9 +174,15 @@ router.post("/bingo/cards", async (req, res) => {
 });
 
 export function startBingoRoundInterval() {
-  const globalState = globalThis as typeof globalThis & { __bingoInterval?: ReturnType<typeof setInterval> };
+  const globalState = globalThis as typeof globalThis & { __bingoInterval?: ReturnType<typeof setInterval>; __bingoTickRunning?: boolean };
   if (globalState.__bingoInterval) return;
-  globalState.__bingoInterval = setInterval(() => { void advanceBingoRound().catch((error) => logger.error({ err: error }, "Bingo round tick failed")); }, 3_000);
+  globalState.__bingoInterval = setInterval(() => {
+    if (globalState.__bingoTickRunning) return;
+    globalState.__bingoTickRunning = true;
+    void advanceBingoRound()
+      .catch((error) => logger.error({ err: error }, "Bingo round tick failed"))
+      .finally(() => { globalState.__bingoTickRunning = false; });
+  }, 3_000);
   void ensureActiveBingoRound().catch((error) => logger.error({ err: error }, "Bingo round startup failed"));
 }
 
