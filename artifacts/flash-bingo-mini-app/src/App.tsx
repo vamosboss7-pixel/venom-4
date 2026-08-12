@@ -549,10 +549,11 @@ function Play() {
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
-      const roundResponse = await fetch(`${getApiUrl()}/api/bingo/round`);
+      const roundQuery = roundId ? `?roundId=${encodeURIComponent(roundId)}` : '';
+      const roundResponse = await fetch(`${getApiUrl()}/api/bingo/round${roundQuery}`);
       if (!roundResponse.ok) return;
       const nextRound = await roundResponse.json() as RoundData;
-      const cardResponse = await fetch(`${getApiUrl()}/api/bingo/cards`, { headers: telegramHeaders() });
+      const cardResponse = await fetch(`${getApiUrl()}/api/bingo/cards${roundQuery}`, { headers: telegramHeaders() });
       const cardData = cardResponse.ok ? await cardResponse.json() as { cards: ServerCard[] } : { cards: [] };
       if (!cancelled) { setRound(nextRound); setCards(cardData.cards.map((card) => ({ id: card.cardNumber, grid: card.grid }))); }
     };

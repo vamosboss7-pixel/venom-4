@@ -105,9 +105,13 @@ async function authenticatedUser(req: Request) {
   return db.query.telegramUsers.findFirst({ where: eq(telegramUsers.telegramId, user.id) });
 }
 
-router.get("/bingo/round", async (_req, res) => {
+router.get("/bingo/round", async (req, res) => {
   try {
-    const round = await ensureActiveBingoRound();
+    const requestedRoundId = Number(req.query.roundId);
+    const round = Number.isInteger(requestedRoundId) && requestedRoundId > 0
+      ? await db.query.bingoRounds.findFirst({ where: eq(bingoRounds.id, requestedRoundId) })
+      : await ensureActiveBingoRound();
+    if (!round) { res.status(404).json({ error: "Bingo round not found" }); return; }
     const [calls, cards] = await Promise.all([
       db.query.bingoCalls.findMany({ where: eq(bingoCalls.roundId, round.id), orderBy: [asc(bingoCalls.position)] }),
       db.query.bingoPlayerCards.findMany({ where: eq(bingoPlayerCards.roundId, round.id), columns: { id: true, telegramId: true, cardNumber: true, grid: true } }),
@@ -123,7 +127,11 @@ router.get("/bingo/round", async (_req, res) => {
 router.get("/bingo/cards", async (req, res) => {
   const user = await authenticatedUser(req);
   if (!user) { res.status(401).json({ error: "Valid Telegram authentication is required" }); return; }
-  const round = await ensureActiveBingoRound();
+  const requestedRoundId = Number(req.query.roundId);
+  const round = Number.isInteger(requestedRoundId) && requestedRoundId > 0
+    ? await db.query.bingoRounds.findFirst({ where: eq(bingoRounds.id, requestedRoundId) })
+    : await ensureActiveBingoRound();
+  if (!round) { res.status(404).json({ error: "Bingo round not found" }); return; }
   const cards = await db.query.bingoPlayerCards.findMany({ where: and(eq(bingoPlayerCards.roundId, round.id), eq(bingoPlayerCards.telegramId, user.telegramId)), orderBy: [asc(bingoPlayerCards.cardNumber)] });
   res.json({ roundId: round.id, cards });
 });
