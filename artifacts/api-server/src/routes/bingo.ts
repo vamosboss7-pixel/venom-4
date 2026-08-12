@@ -80,15 +80,20 @@ export async function ensureActiveBingoRound() {
   if (active?.status === "active") {
     const [existingCall] = await db.select({ id: bingoCalls.id }).from(bingoCalls).where(eq(bingoCalls.roundId, active.id)).limit(1);
     const [normalized] = await db.update(bingoRounds).set(existingCall ? { status: "playing" } : { status: "selecting", selectionEndsAt: new Date(Date.now() + SELECTION_DURATION_MS) }).where(and(eq(bingoRounds.id, active.id), eq(bingoRounds.status, "active"))).returning();
-    return normalized ?? active;
+    const result = normalized ?? active;
+    logger.info({ roundId: result.id, status: result.status, legacy: true }, "Bingo round normalized");
+    return result;
   }
   if (active?.status === "selecting" && !active.selectionEndsAt) {
     const [normalized] = await db.update(bingoRounds).set({ selectionEndsAt: new Date(Date.now() + SELECTION_DURATION_MS) }).where(and(eq(bingoRounds.id, active.id), eq(bingoRounds.status, "selecting"))).returning();
-    return normalized ?? active;
+    const result = normalized ?? active;
+    logger.info({ roundId: result.id, status: result.status }, "Bingo round selection deadline initialized");
+    return result;
   }
   if (active) return active;
   const [created] = await db.insert(bingoRounds).values({ status: "selecting", selectionEndsAt: new Date(Date.now() + SELECTION_DURATION_MS) }).returning();
   if (!created) throw new Error("Could not create Bingo round");
+  logger.info({ roundId: created.id, status: created.status, selectionEndsAt: created.selectionEndsAt }, "Bingo round created");
   return created;
 }
 
@@ -106,6 +111,7 @@ export async function advanceBingoRound() {
       await tx.update(bingoRounds).set({ status: "playing", startedAt: new Date() }).where(eq(bingoRounds.id, round.id));
       return "playing";
     });
+    logger.info({ roundId: round.id, cardCount: nextStatus === "playing" ? 1 : 0, nextStatus }, "Bingo selection round transitioned");
     if (nextStatus === "completed") return ensureActiveBingoRound();
     round = { ...round, status: "playing" };
   }
@@ -114,6 +120,7 @@ export async function advanceBingoRound() {
     const [card] = await db.select({ id: bingoPlayerCards.id }).from(bingoPlayerCards).where(eq(bingoPlayerCards.roundId, round.id)).limit(1);
     if (!card) {
       await db.update(bingoRounds).set({ status: "completed", completedAt: new Date() }).where(and(eq(bingoRounds.id, round.id), eq(bingoRounds.status, "playing")));
+      logger.info({ roundId: round.id }, "Empty Bingo playing round closed");
       return ensureActiveBingoRound();
     }
   }
@@ -125,6 +132,7 @@ export async function advanceBingoRound() {
   }
   const remaining = shuffledNumbers().filter((number) => !calls.some((call) => call.number === number));
   await db.insert(bingoCalls).values({ roundId: round.id, number: remaining[0]!, position: calls.length });
+  logger.info({ roundId: round.id, callNumber: remaining[0], callPosition: calls.length + 1 }, "Bingo number called");
   await resolveRoundWinner(round.id);
   return round;
 }
@@ -196,6 +204,7 @@ router.post("/bingo/cards/reserve", async (req, res) => {
       await tx.insert(walletTransactions).values({ telegramId: user.telegramId, type: "adjustment", amount: (-CARD_STAKE).toFixed(2), balanceBefore: before.toFixed(2), balanceAfter: balance, status: "completed", reference, metadata: { roundId: lockedRound.id, cardNumber, stake: CARD_STAKE, wallet } });
       return { reserved: true, wallet, balance };
     });
+    logger.info({ roundId: round.id, telegramId: user.telegramId, cardNumber, wallet: result.wallet }, "Bingo card reserved");
     res.status(201).json({ roundId: round.id, ...result });
   } catch (error) {
     const status = (error as { status?: number }).status;
@@ -228,6 +237,7 @@ router.post("/bingo/cards/release", async (req, res) => {
       await tx.insert(walletTransactions).values({ telegramId: user.telegramId, type: "adjustment", amount: CARD_STAKE.toFixed(2), balanceBefore: balanceBefore.toFixed(2), balanceAfter, status: "completed", reference: `bingo_release:${lockedRound.id}:${user.telegramId}:${cardNumber}`, metadata: { roundId: lockedRound.id, cardNumber, stake: CARD_STAKE, wallet, source: reference } });
       return { released: true, wallet, balance: balanceAfter };
     });
+    logger.info({ roundId: round.id, telegramId: user.telegramId, cardNumber, wallet: result.wallet, released: result.released }, "Bingo card release processed");
     res.json({ roundId: round.id, ...result });
   } catch (error) {
     const status = (error as { status?: number }).status;
