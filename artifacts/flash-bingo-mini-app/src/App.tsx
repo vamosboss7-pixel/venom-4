@@ -405,7 +405,10 @@ function Home() {
         if (selectedRef.current.size > 0 && !purchaseStartedRef.current) {
           purchaseStartedRef.current = true;
           const cardNumbers = [...selectedRef.current].sort((a, b) => a - b);
-          void fetch(`${getApiUrl()}/api/bingo/cards`, { method: 'POST', headers: { 'content-type': 'application/json', ...telegramHeaders() }, body: JSON.stringify({ cardNumbers }) })
+          const controller = new AbortController();
+          const requestTimeout = window.setTimeout(() => controller.abort(), 12000);
+          void fetch(`${getApiUrl()}/api/bingo/cards`, { method: 'POST', headers: { 'content-type': 'application/json', ...telegramHeaders() }, body: JSON.stringify({ cardNumbers }), signal: controller.signal })
+            .finally(() => window.clearTimeout(requestTimeout))
             .then(async (response) => {
               if (response.ok) return response.json() as Promise<{ roundId: number }>;
               const body = await response.json().catch(() => ({})) as { error?: string };
