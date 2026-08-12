@@ -397,11 +397,13 @@ function Home() {
   const taken = useMemo(() => new Set(round?.takenCardNumbers ?? []), [round]);
   useEffect(() => { void fetch(`${getApiUrl()}/api/bingo/round`).then((response) => response.ok ? response.json() as Promise<RoundData> : null).then((data) => { if (data) setRound(data); }).catch(() => undefined); }, []);
   const selectedRef = useRef(selected);
+  const purchaseStartedRef = useRef(false);
   selectedRef.current = selected;
   useEffect(() => {
     const timer = window.setInterval(() => setCountdown((current) => {
       if (current <= 1) {
-        if (selectedRef.current.size > 0) {
+        if (selectedRef.current.size > 0 && !purchaseStartedRef.current) {
+          purchaseStartedRef.current = true;
           const cardNumbers = [...selectedRef.current].sort((a, b) => a - b);
           void fetch(`${getApiUrl()}/api/bingo/cards`, { method: 'POST', headers: { 'content-type': 'application/json', ...telegramHeaders() }, body: JSON.stringify({ cardNumbers }) })
             .then(async (response) => {
@@ -412,11 +414,24 @@ function Home() {
               window.setTimeout(() => setShowWarning(false), 3000);
               return null;
             })
-            .then((data) => { if (data) setLocation(`/play?round=${data.roundId}`); })
-            .catch(() => { setWarningMessage('Card purchase failed. Please try again.'); setShowWarning(true); window.setTimeout(() => setShowWarning(false), 3000); });
+            .then((data) => {
+              if (data) {
+                setLocation(`/play?round=${data.roundId}`);
+              } else {
+                purchaseStartedRef.current = false;
+                setCountdown(START_COUNTDOWN);
+              }
+            })
+            .catch(() => {
+              purchaseStartedRef.current = false;
+              setCountdown(START_COUNTDOWN);
+              setWarningMessage('Card purchase failed. Please try again.');
+              setShowWarning(true);
+              window.setTimeout(() => setShowWarning(false), 3000);
+            });
           return 0;
         }
-        return START_COUNTDOWN;
+        return current;
       }
       return current - 1;
     }), 1000);
