@@ -78,7 +78,8 @@ function buildCard(cardNumber: number): Array<number | "star"> {
 export async function ensureActiveBingoRound() {
   const active = await db.query.bingoRounds.findFirst({ where: inArray(bingoRounds.status, ["selecting", "playing", "active"]), orderBy: [asc(bingoRounds.id)] });
   if (active?.status === "active") {
-    const [normalized] = await db.update(bingoRounds).set({ status: "playing" }).where(and(eq(bingoRounds.id, active.id), eq(bingoRounds.status, "active"))).returning();
+    const [existingCall] = await db.select({ id: bingoCalls.id }).from(bingoCalls).where(eq(bingoCalls.roundId, active.id)).limit(1);
+    const [normalized] = await db.update(bingoRounds).set(existingCall ? { status: "playing" } : { status: "selecting", selectionEndsAt: new Date(Date.now() + SELECTION_DURATION_MS) }).where(and(eq(bingoRounds.id, active.id), eq(bingoRounds.status, "active"))).returning();
     return normalized ?? active;
   }
   if (active?.status === "selecting" && !active.selectionEndsAt) {
