@@ -46,6 +46,8 @@ type TelegramAuthPayload = {
   initData?: unknown;
 };
 
+type TelegramPollingUpdate = TelegramUpdate & { update_id: number };
+
 type DepositSession =
   | { step: "payment-method" }
   | { step: "amount" }
@@ -67,7 +69,7 @@ function getBotToken() {
 }
 
 function getWebAppUrl() {
-  const value = process.env["TELEGRAM_WEB_APP_URL"]?.trim();
+  const value = (process.env["TELEGRAM_WEB_APP_URL"] ?? process.env["RENDER_EXTERNAL_URL"])?.trim();
   if (!value) return undefined;
   return value.startsWith("http://") || value.startsWith("https://")
     ? value
@@ -671,10 +673,12 @@ async function handleTelegramUpdate(update: TelegramUpdate) {
 
 router.post("/telegram/webhook", async (req, res) => {
   if (!isTelegramWebhookRequest(req)) {
+    logger.warn({ hasSecretHeader: Boolean(req.header("x-telegram-bot-api-secret-token")), hasConfiguredSecret: Boolean(getWebhookSecret()) }, "Telegram webhook rejected: secret mismatch");
     res.status(401).json({ error: "Unauthorized" });
     return;
   }
 
+  logger.info({ updateKeys: Object.keys(req.body ?? {}) }, "Telegram webhook update received");
   try {
     await handleTelegramUpdate(req.body as TelegramUpdate);
     res.sendStatus(200);
@@ -687,13 +691,25 @@ router.post("/telegram/webhook", async (req, res) => {
 router.post("/telegram/auth", async (req, res) => {
   const botToken = getBotToken();
   const { initData } = req.body as TelegramAuthPayload;
-  if (!botToken || typeof initData !== "string" || !isValidTelegramInitData(initData, botToken)) {
+  if (!botToken) {
+    logger.warn({ hasInitData: typeof initData === "string" && initData.length > 0 }, "Mini App auth rejected: TELEGRAM_BOT_TOKEN is missing");
+    res.status(401).json({ error: "Invalid Telegram authentication data" });
+    return;
+  }
+  if (typeof initData !== "string" || initData.length === 0) {
+    logger.warn("Mini App auth rejected: Telegram initData is missing");
+    res.status(401).json({ error: "Invalid Telegram authentication data" });
+    return;
+  }
+  if (!isValidTelegramInitData(initData, botToken)) {
+    logger.warn("Mini App auth rejected: Telegram initData is invalid or expired");
     res.status(401).json({ error: "Invalid Telegram authentication data" });
     return;
   }
 
   const user = parseTelegramUser(initData);
   if (!user) {
+    logger.warn("Mini App auth rejected: Telegram user data is missing");
     res.status(401).json({ error: "Telegram user data is missing" });
     return;
   }
@@ -706,8 +722,57 @@ router.post("/telegram/auth", async (req, res) => {
       winWalletBalance: true,
     },
   });
+  logger.info({ telegramId: user.id, profileFound: Boolean(profile), hasPlayWalletBalance: Boolean(profile?.playWalletBalance), hasWinWalletBalance: Boolean(profile?.winWalletBalance) }, "Mini App wallet profile lookup completed");
   res.json({ user, profile });
 });
+
+function sleep(milliseconds: number) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+export function startTelegramPolling() {
+  const globalState = globalThis as typeof globalThis & { __telegramPolling?: boolean };
+  if (globalState.__telegramPolling) return;
+  globalState.__telegramPolling = true;
+  void (async () => {
+    const token = getBotToken();
+    if (!token) {
+      logger.warn("Telegram polling skipped because TELEGRAM_BOT_TOKEN is missing");
+      return;
+    }
+
+    try {
+      await telegramRequest("deleteWebhook", { drop_pending_updates: false });
+      const bot = await telegramRequest<{ username?: string }>("getMe", {});
+      logger.info({ botUsername: bot.username ?? "unknown" }, "Telegram webhook deleted; long polling started");
+    } catch (error) {
+      logger.error({ err: error }, "Telegram polling could not initialize");
+    }
+
+    let offset = 0;
+    while (true) {
+      try {
+        const updates = await telegramRequest<TelegramPollingUpdate[]>("getUpdates", {
+          offset,
+          timeout: 25,
+          allowed_updates: ["message", "callback_query"],
+        });
+        logger.info({ updateCount: updates.length, offset }, "Telegram polling response received");
+        for (const update of updates) {
+          offset = update.update_id + 1;
+          try {
+            await handleTelegramUpdate(update);
+          } catch (error) {
+            logger.error({ err: error, updateId: update.update_id }, "Telegram polling update handling failed");
+          }
+        }
+      } catch (error) {
+        logger.error({ err: error }, "Telegram polling request failed");
+        await sleep(5000);
+      }
+    }
+  })();
+}
 
 export async function registerTelegramWebhook() {
   const token = getBotToken();
@@ -726,6 +791,7 @@ export async function registerTelegramWebhook() {
   }
 
   const secretToken = getWebhookSecret();
+  logger.info({ webhookUrl, hasSecretToken: Boolean(secretToken), hasWebAppUrl: Boolean(webAppUrl) }, "Registering Telegram webhook");
   await telegramRequest("setWebhook", {
     url: webhookUrl,
     ...(secretToken ? { secret_token: secretToken } : {}),

@@ -180,11 +180,11 @@ function useTelegramBridge() {
     if (!webApp.initData) return;
     const configuredApiUrl = import.meta.env.VITE_API_BASE_URL;
     const apiUrl = configuredApiUrl
-      ? (configuredApiUrl.startsWith('http') ? configuredApiUrl : `https://${configuredApiUrl}`)
+      ? (configuredApiUrl.startsWith('http') ? configuredApiUrl : `https://${configuredApiUrl}`).replace(/\/$/, '')
       : '';
     void fetch(`${apiUrl}/api/telegram/auth`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', 'x-telegram-init-data': webApp.initData },
       body: JSON.stringify({ initData: webApp.initData }),
     }).then(async (response) => {
       if (!response.ok) return;
@@ -323,7 +323,7 @@ function NumberGrid({ selected, taken, onToggle }: { selected: Set<number>; take
           const isSelected = selected.has(number);
           const isTaken = taken.has(number);
           return (
-            <button type="button" key={number} data-testid={`button-card-${number}`} disabled={isTaken} onClick={() => onToggle(number)} className={`depth-action relative aspect-square rounded-xl border text-xs font-bold transition-all duration-150 active:scale-90 ${isSelected ? 'border-[hsl(var(--primary))] bg-[hsl(var(--primary))] text-[hsl(var(--primary-foreground))] shadow-[0_4px_0_hsl(152_61%_30%)] -translate-y-0.5' : isTaken ? 'border-white/5 bg-white/[.025] text-[hsl(var(--muted-foreground)/.35)]' : 'border-white/10 bg-[hsl(161_35%_15%)] text-[hsl(var(--foreground)/.78)] hover:border-[hsl(var(--primary)/.7)] hover:bg-[hsl(var(--primary)/.1)]'}`}>
+            <button type="button" key={number} data-testid={`button-card-${number}`} disabled={isTaken && !isSelected} onClick={() => onToggle(number)} className={`depth-action relative aspect-square rounded-xl border text-xs font-bold transition-all duration-150 active:scale-90 ${isSelected ? 'border-[hsl(var(--primary))] bg-[hsl(var(--primary))] text-[hsl(var(--primary-foreground))] shadow-[0_4px_0_hsl(152_61%_30%)] -translate-y-0.5' : isTaken ? 'border-white/5 bg-white/[.025] text-[hsl(var(--muted-foreground)/.35)]' : 'border-white/10 bg-[hsl(161_35%_15%)] text-[hsl(var(--foreground)/.78)] hover:border-[hsl(var(--primary)/.7)] hover:bg-[hsl(var(--primary)/.1)]'}`}>
               {number}
               {isTaken && <span className="absolute inset-x-1.5 bottom-1 h-px rotate-[-28deg] bg-[hsl(var(--destructive)/.55)]" />}
               {isSelected && <span className="absolute right-1 top-0.5 text-[9px]">✓</span>}
@@ -378,6 +378,9 @@ function telegramHeaders(): Record<string, string> {
 
 type RoundData = {
   id: number;
+  status: string;
+  startedAt: string;
+  selectionEndsAt?: string | null;
   calls: Array<{ number: number; position: number; calledAt: string }>;
   takenCardNumbers: number[];
   pot: string;
@@ -387,61 +390,117 @@ type ServerCard = { id?: number; cardNumber: number; grid: Cell[] };
 
 function Home() {
   const [, setLocation] = useLocation();
+  const { profile } = useTelegramBridge();
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [muted, setMuted] = useState(true);
   const [countdown, setCountdown] = useState(START_COUNTDOWN);
   const [tab, setTab] = useState<Tab>('bingo');
   const [showWarning, setShowWarning] = useState(false);
   const [warningMessage, setWarningMessage] = useState('');
+  const [debugMessage, setDebugMessage] = useState('Loading round status...');
   const [round, setRound] = useState<RoundData | null>(null);
-  const taken = useMemo(() => new Set(round?.takenCardNumbers ?? []), [round]);
-  useEffect(() => { void fetch(`${getApiUrl()}/api/bingo/round`).then((response) => response.ok ? response.json() as Promise<RoundData> : null).then((data) => { if (data) setRound(data); }).catch(() => undefined); }, []);
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
+  const taken = useMemo(() => new Set(round?.takenCardNumbers ?? []), [round]);
   useEffect(() => {
-    const timer = window.setInterval(() => setCountdown((current) => {
-      if (current <= 1) {
-        if (selectedRef.current.size > 0) {
-          const cardNumbers = [...selectedRef.current].sort((a, b) => a - b);
-          void fetch(`${getApiUrl()}/api/bingo/cards`, { method: 'POST', headers: { 'content-type': 'application/json', ...telegramHeaders() }, body: JSON.stringify({ cardNumbers }) })
-            .then(async (response) => {
-              if (response.ok) return response.json() as Promise<{ roundId: number }>;
-              const body = await response.json().catch(() => ({})) as { error?: string };
-              setWarningMessage(response.status === 402 ? 'Insufficient play wallet balance' : response.status === 409 ? (body.error ?? 'A selected card was just taken') : (body.error ?? 'Card purchase failed'));
-              setShowWarning(true);
-              window.setTimeout(() => setShowWarning(false), 3000);
-              return null;
-            })
-            .then((data) => { if (data) setLocation(`/play?round=${data.roundId}`); })
-            .catch(() => { setWarningMessage('Card purchase failed. Please try again.'); setShowWarning(true); window.setTimeout(() => setShowWarning(false), 3000); });
-          return 0;
-        }
-        return START_COUNTDOWN;
+    let cancelled = false;
+    const loadRound = async () => {
+      const response = await fetch(`${getApiUrl()}/api/bingo/round`);
+      if (!response.ok) {
+        setDebugMessage(`Round request failed: HTTP ${response.status}`);
+        return;
       }
-      return current - 1;
-    }), 1000);
+      const data = await response.json() as RoundData;
+      if (cancelled) return;
+      if (roundIdRef.current !== null && roundIdRef.current !== data.id) {
+        setSelected(new Set());
+        purchaseStartedRef.current = false;
+      }
+      const sameRound = roundIdRef.current === data.id;
+      roundIdRef.current = data.id;
+      setRound(data);
+      setDebugMessage(`Round #${data.id} · ${data.status} · selected ${selectedRef.current.size}/${MAX_CARDS} · taken ${data.takenCardNumbers.length}`);
+      if (sameRound && data.status === 'playing' && selectedRef.current.size > 0) {
+        setLocation(`/play?round=${data.id}`);
+        return;
+      }
+      if (data.status === 'selecting' && data.selectionEndsAt) {
+        setCountdown(Math.max(0, Math.ceil((new Date(data.selectionEndsAt).getTime() - Date.now()) / 1000)));
+      }
+    };
+    const reportRoundError = (error: unknown) => {
+      setDebugMessage(`Round load failed: ${error instanceof Error ? error.message : 'network error'}`);
+    };
+    void loadRound().catch(reportRoundError);
+    const timer = window.setInterval(() => { void loadRound().catch(reportRoundError); }, 3000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, []);
+  const roundIdRef = useRef<number | null>(null);
+  const pendingCardsRef = useRef(new Set<number>());
+  useEffect(() => {
+    const timer = window.setInterval(() => setCountdown((current) => Math.max(0, current - 1)), 1000);
     return () => window.clearInterval(timer);
-  }, [setLocation]);
-  const toggle = (number: number) => {
+  }, []);
+  const showCardWarning = (message: string) => {
+    setWarningMessage(message);
+    setShowWarning(true);
+    window.setTimeout(() => setShowWarning(false), 3000);
+  };
+  const toggle = async (number: number) => {
+    if (pendingCardsRef.current.has(number)) {
+      setDebugMessage(`Card #${number} is already processing`);
+      return;
+    }
+    if (round?.status !== 'selecting') {
+      setDebugMessage(`Card #${number} blocked: round status is ${round?.status ?? 'unknown'}`);
+      return;
+    }
+    const isSelected = selected.has(number);
+    setDebugMessage(`${isSelected ? 'Releasing' : 'Reserving'} card #${number}...`);
+    if (!isSelected && selected.size >= MAX_CARDS) {
+      showCardWarning('You can select at most 4 cards');
+      return;
+    }
+    pendingCardsRef.current.add(number);
     setSelected((current) => {
       const next = new Set(current);
-      if (next.has(number)) next.delete(number);
-      else if (next.size < MAX_CARDS) next.add(number);
-      else {
-        setShowWarning(true);
-        window.setTimeout(() => setShowWarning(false), 2200);
-      }
+      if (isSelected) next.delete(number); else next.add(number);
       return next;
     });
+    try {
+      const response = await fetch(`${getApiUrl()}/api/bingo/cards/${isSelected ? 'release' : 'reserve'}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...telegramHeaders() },
+        body: JSON.stringify({ cardNumber: number }),
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({})) as { error?: string };
+        throw new Error(body.error ?? 'Card update failed');
+      }
+      setRound((current) => current ? { ...current, takenCardNumbers: isSelected ? current.takenCardNumbers.filter((card) => card !== number) : [...new Set([...current.takenCardNumbers, number])] } : current);
+      setDebugMessage(`Card #${number} ${isSelected ? 'released' : 'reserved'} successfully`);
+    } catch (error) {
+      setSelected((current) => {
+        const next = new Set(current);
+        if (isSelected) next.add(number); else next.delete(number);
+        return next;
+      });
+      const message = error instanceof Error ? error.message : 'Card update failed';
+      setDebugMessage(`Card #${number} failed: ${message}`);
+      showCardWarning(message);
+    } finally {
+      pendingCardsRef.current.delete(number);
+    }
   };
   const selectedCards = [...selected].sort((a, b) => a - b);
   return (
     <AppShell tab={tab} setTab={setTab}>
       {tab === 'wallet' ? <WalletPanel /> : <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-        <Stats play={selected.size * STAKE} pot={Number(round?.pot ?? '0')} cardsTaken={taken.size} />
+        <Stats play={Number(profile?.playWalletBalance ?? '0')} pot={Number(round?.pot ?? '0')} cardsTaken={taken.size} win={Number(profile?.winWalletBalance ?? '0')} />
         <SoundCountdown muted={muted} onToggle={() => setMuted((value) => !value)} countdown={countdown} />
         <div className="min-h-0 flex-1 overflow-y-auto"><NumberGrid selected={selected} taken={taken} onToggle={toggle} /></div>
         {selectedCards.length > 0 && <div className="pointer-events-none absolute bottom-[74px] left-0 right-0 z-10 flex gap-2 overflow-hidden bg-gradient-to-t from-[hsl(161_42%_9%)] to-transparent px-3 pb-2 pt-8">{selectedCards.map((id) => <MiniCard key={id} id={id} grid={buildCard(id)} />)}</div>}
+        <div data-testid="status-card-debug" className="absolute bottom-[76px] left-3 right-3 z-20 rounded-xl border border-white/10 bg-[hsl(161_35%_15%/.94)] px-3 py-1.5 text-center text-[10px] text-[hsl(var(--muted-foreground))]">DEBUG: {debugMessage} · pending {pendingCardsRef.current.size}</div>
         {showWarning && <div role="alert" data-testid="status-card-limit" className="absolute left-4 right-4 top-24 z-30 rounded-2xl border border-[hsl(var(--primary)/.6)] bg-[hsl(161_35%_15%/.98)] px-4 py-3 text-center text-sm font-bold text-[hsl(var(--primary))] shadow-xl animate-rise-in">{warningMessage || 'ከ4 ካርድ በላይ መምረጥ አይችሉም'}</div>}
       </div>}
     </AppShell>
@@ -511,7 +570,7 @@ function WinnerModal({ card, called, pattern, winnerEffect, prize, winnerName }:
 
 function Play() {
   const [location, setLocation] = useLocation();
-  const [muted, setMuted] = useState(true);
+  const [muted, setMuted] = useState(false);
   const [tab, setTab] = useState<Tab>('bingo');
   const [round, setRound] = useState<RoundData | null>(null);
   const [cards, setCards] = useState<Array<{ id: number; grid: Cell[] }>>([]);
@@ -531,10 +590,11 @@ function Play() {
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
-      const roundResponse = await fetch(`${getApiUrl()}/api/bingo/round`);
+      const roundQuery = roundId ? `?roundId=${encodeURIComponent(roundId)}` : '';
+      const roundResponse = await fetch(`${getApiUrl()}/api/bingo/round${roundQuery}`);
       if (!roundResponse.ok) return;
       const nextRound = await roundResponse.json() as RoundData;
-      const cardResponse = await fetch(`${getApiUrl()}/api/bingo/cards`, { headers: telegramHeaders() });
+      const cardResponse = await fetch(`${getApiUrl()}/api/bingo/cards${roundQuery}`, { headers: telegramHeaders() });
       const cardData = cardResponse.ok ? await cardResponse.json() as { cards: ServerCard[] } : { cards: [] };
       if (!cancelled) { setRound(nextRound); setCards(cardData.cards.map((card) => ({ id: card.cardNumber, grid: card.grid }))); }
     };
