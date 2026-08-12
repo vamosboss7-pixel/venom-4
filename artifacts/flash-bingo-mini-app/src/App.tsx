@@ -409,7 +409,7 @@ function Home() {
             .then(async (response) => {
               if (response.ok) return response.json() as Promise<{ roundId: number }>;
               const body = await response.json().catch(() => ({})) as { error?: string };
-              setWarningMessage(response.status === 402 ? 'Insufficient play wallet balance' : response.status === 409 ? (body.error ?? 'A selected card was just taken') : (body.error ?? 'Card purchase failed'));
+              setWarningMessage(response.status === 402 ? (body.error ?? 'Insufficient balance in play and win wallets') : response.status === 409 ? (body.error ?? 'A selected card was just taken') : (body.error ?? 'Card purchase failed'));
               setShowWarning(true);
               window.setTimeout(() => setShowWarning(false), 3000);
               return null;

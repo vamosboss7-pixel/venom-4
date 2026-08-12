@@ -154,12 +154,15 @@ router.post("/bingo/cards", async (req, res) => {
         return { cards, balance: ledger.balanceAfter };
       }
       const total = missing.length * CARD_STAKE;
-      const before = Number(lockedUser.playWalletBalance);
-      if (before < total) throw Object.assign(new Error("Insufficient play wallet balance"), { status: 402 });
+      const playBalance = Number(lockedUser.playWalletBalance);
+      const winBalance = Number(lockedUser.winWalletBalance);
+      const wallet = playBalance >= total ? "play" : winBalance >= total ? "win" : undefined;
+      if (!wallet) throw Object.assign(new Error("Insufficient balance in play and win wallets"), { status: 402 });
       if (missing.length) await tx.insert(bingoPlayerCards).values(missing.map((cardNumber) => ({ roundId: lockedRound.id, telegramId: user.telegramId, cardNumber, grid: buildCard(cardNumber) })));
+      const before = wallet === "play" ? playBalance : winBalance;
       const after = (before - total).toFixed(2);
-      await tx.update(telegramUsers).set({ playWalletBalance: after, updatedAt: new Date() }).where(eq(telegramUsers.telegramId, user.telegramId));
-      if (total > 0) await tx.insert(walletTransactions).values({ telegramId: user.telegramId, type: "adjustment", amount: (-total).toFixed(2), balanceBefore: before.toFixed(2), balanceAfter: after, status: "completed", reference, metadata: { roundId: lockedRound.id, cardNumbers: missing, stake: CARD_STAKE } });
+      await tx.update(telegramUsers).set({ ...(wallet === "play" ? { playWalletBalance: after } : { winWalletBalance: after }), updatedAt: new Date() }).where(eq(telegramUsers.telegramId, user.telegramId));
+      if (total > 0) await tx.insert(walletTransactions).values({ telegramId: user.telegramId, type: "adjustment", amount: (-total).toFixed(2), balanceBefore: before.toFixed(2), balanceAfter: after, status: "completed", reference, metadata: { roundId: lockedRound.id, cardNumbers: missing, stake: CARD_STAKE, wallet } });
       const cards = await tx.select().from(bingoPlayerCards).where(and(eq(bingoPlayerCards.roundId, lockedRound.id), eq(bingoPlayerCards.telegramId, user.telegramId))).orderBy(asc(bingoPlayerCards.cardNumber));
       return { cards, balance: after };
     });
