@@ -398,6 +398,8 @@ function Home() {
   const [showWarning, setShowWarning] = useState(false);
   const [warningMessage, setWarningMessage] = useState('');
   const [round, setRound] = useState<RoundData | null>(null);
+  const selectedRef = useRef(selected);
+  selectedRef.current = selected;
   const taken = useMemo(() => new Set(round?.takenCardNumbers ?? []), [round]);
   useEffect(() => {
     let cancelled = false;
@@ -410,8 +412,13 @@ function Home() {
         setSelected(new Set());
         purchaseStartedRef.current = false;
       }
+      const sameRound = roundIdRef.current === data.id;
       roundIdRef.current = data.id;
       setRound(data);
+      if (sameRound && data.status === 'playing' && selectedRef.current.size > 0) {
+        setLocation(`/play?round=${data.id}`);
+        return;
+      }
       if (data.status === 'selecting' && data.selectionEndsAt) {
         setCountdown(Math.max(0, Math.ceil((new Date(data.selectionEndsAt).getTime() - Date.now()) / 1000)));
       }
@@ -420,63 +427,51 @@ function Home() {
     const timer = window.setInterval(() => { void loadRound().catch(() => undefined); }, 3000);
     return () => { cancelled = true; window.clearInterval(timer); };
   }, []);
-  const selectedRef = useRef(selected);
   const roundIdRef = useRef<number | null>(null);
-  const purchaseStartedRef = useRef(false);
-  selectedRef.current = selected;
+  const pendingCardsRef = useRef(new Set<number>());
   useEffect(() => {
-    const timer = window.setInterval(() => setCountdown((current) => {
-      if (current <= 1) {
-        if (selectedRef.current.size > 0 && !purchaseStartedRef.current) {
-          purchaseStartedRef.current = true;
-          const cardNumbers = [...selectedRef.current].sort((a, b) => a - b);
-          const controller = new AbortController();
-          const requestTimeout = window.setTimeout(() => controller.abort(), 12000);
-          void fetch(`${getApiUrl()}/api/bingo/cards`, { method: 'POST', headers: { 'content-type': 'application/json', ...telegramHeaders() }, body: JSON.stringify({ cardNumbers }), signal: controller.signal })
-            .finally(() => window.clearTimeout(requestTimeout))
-            .then(async (response) => {
-              if (response.ok) return response.json() as Promise<{ roundId: number }>;
-              const body = await response.json().catch(() => ({})) as { error?: string };
-              if (response.status === 409 && body.error === 'Card selection is closed') setSelected(new Set());
-              setWarningMessage(response.status === 402 ? (body.error ?? 'Insufficient balance in play and win wallets') : response.status === 409 ? (body.error ?? 'A selected card was just taken') : (body.error ?? 'Card purchase failed'));
-              setShowWarning(true);
-              window.setTimeout(() => setShowWarning(false), 3000);
-              return null;
-            })
-            .then((data) => {
-              if (data) {
-                setLocation(`/play?round=${data.roundId}`);
-              } else {
-                purchaseStartedRef.current = false;
-                setCountdown(START_COUNTDOWN);
-              }
-            })
-            .catch(() => {
-              purchaseStartedRef.current = false;
-              setCountdown(START_COUNTDOWN);
-              setWarningMessage('Card purchase failed. Please try again.');
-              setShowWarning(true);
-              window.setTimeout(() => setShowWarning(false), 3000);
-            });
-          return 0;
-        }
-        return current;
-      }
-      return current - 1;
-    }), 1000);
+    const timer = window.setInterval(() => setCountdown((current) => Math.max(0, current - 1)), 1000);
     return () => window.clearInterval(timer);
-  }, [setLocation]);
-  const toggle = (number: number) => {
+  }, []);
+  const showCardWarning = (message: string) => {
+    setWarningMessage(message);
+    setShowWarning(true);
+    window.setTimeout(() => setShowWarning(false), 3000);
+  };
+  const toggle = async (number: number) => {
+    if (pendingCardsRef.current.has(number) || round?.status !== 'selecting') return;
+    const isSelected = selected.has(number);
+    if (!isSelected && selected.size >= MAX_CARDS) {
+      showCardWarning('You can select at most 4 cards');
+      return;
+    }
+    pendingCardsRef.current.add(number);
     setSelected((current) => {
       const next = new Set(current);
-      if (next.has(number)) next.delete(number);
-      else if (next.size < MAX_CARDS) next.add(number);
-      else {
-        setShowWarning(true);
-        window.setTimeout(() => setShowWarning(false), 2200);
-      }
+      if (isSelected) next.delete(number); else next.add(number);
       return next;
     });
+    try {
+      const response = await fetch(`${getApiUrl()}/api/bingo/cards/${isSelected ? 'release' : 'reserve'}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...telegramHeaders() },
+        body: JSON.stringify({ cardNumber: number }),
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({})) as { error?: string };
+        throw new Error(body.error ?? 'Card update failed');
+      }
+      setRound((current) => current ? { ...current, takenCardNumbers: isSelected ? current.takenCardNumbers.filter((card) => card !== number) : [...new Set([...current.takenCardNumbers, number])] } : current);
+    } catch (error) {
+      setSelected((current) => {
+        const next = new Set(current);
+        if (isSelected) next.add(number); else next.delete(number);
+        return next;
+      });
+      showCardWarning(error instanceof Error ? error.message : 'Card update failed');
+    } finally {
+      pendingCardsRef.current.delete(number);
+    }
   };
   const selectedCards = [...selected].sort((a, b) => a - b);
   return (

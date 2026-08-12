@@ -161,6 +161,74 @@ router.get("/bingo/cards", async (req, res) => {
   res.json({ roundId: round.id, cards });
 });
 
+router.post("/bingo/cards/reserve", async (req, res) => {
+  const user = await authenticatedUser(req);
+  if (!user) { res.status(401).json({ error: "Valid Telegram authentication is required" }); return; }
+  const cardNumber = req.body?.cardNumber;
+  if (!Number.isInteger(cardNumber) || cardNumber < 1 || cardNumber > CARD_COUNT) { res.status(400).json({ error: "Choose a valid card" }); return; }
+  const round = await ensureActiveBingoRound();
+  try {
+    const result = await db.transaction(async (tx) => {
+      const [lockedRound] = await tx.select().from(bingoRounds).where(eq(bingoRounds.id, round.id)).for("update").limit(1);
+      const [lockedUser] = await tx.select().from(telegramUsers).where(eq(telegramUsers.telegramId, user.telegramId)).for("update").limit(1);
+      if (!lockedRound || !lockedUser || lockedRound.status !== "selecting" || !lockedRound.selectionEndsAt || lockedRound.selectionEndsAt.getTime() <= Date.now()) throw Object.assign(new Error("Card selection is closed"), { status: 409 });
+      const reference = `bingo_reservation:${lockedRound.id}:${user.telegramId}:${cardNumber}`;
+      const [existingLedger] = await tx.select().from(walletTransactions).where(eq(walletTransactions.reference, reference)).limit(1);
+      if (existingLedger) return { reserved: true, wallet: (existingLedger.metadata as { wallet?: string } | null)?.wallet ?? "play", balance: existingLedger.balanceAfter };
+      const [existingCard] = await tx.select().from(bingoPlayerCards).where(and(eq(bingoPlayerCards.roundId, lockedRound.id), eq(bingoPlayerCards.cardNumber, cardNumber))).for("update").limit(1);
+      if (existingCard) throw Object.assign(new Error("This card is already taken"), { status: 409 });
+      const playBalance = Number(lockedUser.playWalletBalance);
+      const winBalance = Number(lockedUser.winWalletBalance);
+      const wallet = playBalance >= CARD_STAKE ? "play" : winBalance >= CARD_STAKE ? "win" : undefined;
+      if (!wallet) throw Object.assign(new Error("Insufficient balance in play and win wallets"), { status: 402 });
+      const before = wallet === "play" ? playBalance : winBalance;
+      const balance = (before - CARD_STAKE).toFixed(2);
+      await tx.insert(bingoPlayerCards).values({ roundId: lockedRound.id, telegramId: user.telegramId, cardNumber, grid: buildCard(cardNumber) });
+      await tx.update(telegramUsers).set({ ...(wallet === "play" ? { playWalletBalance: balance } : { winWalletBalance: balance }), updatedAt: new Date() }).where(eq(telegramUsers.telegramId, user.telegramId));
+      await tx.insert(walletTransactions).values({ telegramId: user.telegramId, type: "adjustment", amount: (-CARD_STAKE).toFixed(2), balanceBefore: before.toFixed(2), balanceAfter: balance, status: "completed", reference, metadata: { roundId: lockedRound.id, cardNumber, stake: CARD_STAKE, wallet } });
+      return { reserved: true, wallet, balance };
+    });
+    res.status(201).json({ roundId: round.id, ...result });
+  } catch (error) {
+    const status = (error as { status?: number }).status;
+    if (status) { res.status(status).json({ error: (error as Error).message }); return; }
+    logger.error({ err: error }, "Failed to reserve Bingo card");
+    res.status(503).json({ error: "Card reservation unavailable" });
+  }
+});
+
+router.post("/bingo/cards/release", async (req, res) => {
+  const user = await authenticatedUser(req);
+  if (!user) { res.status(401).json({ error: "Valid Telegram authentication is required" }); return; }
+  const cardNumber = req.body?.cardNumber;
+  if (!Number.isInteger(cardNumber) || cardNumber < 1 || cardNumber > CARD_COUNT) { res.status(400).json({ error: "Choose a valid card" }); return; }
+  const round = await ensureActiveBingoRound();
+  try {
+    const result = await db.transaction(async (tx) => {
+      const [lockedRound] = await tx.select().from(bingoRounds).where(eq(bingoRounds.id, round.id)).for("update").limit(1);
+      const [lockedUser] = await tx.select().from(telegramUsers).where(eq(telegramUsers.telegramId, user.telegramId)).for("update").limit(1);
+      if (!lockedRound || !lockedUser || lockedRound.status !== "selecting") throw Object.assign(new Error("Card selection is closed"), { status: 409 });
+      const [card] = await tx.select().from(bingoPlayerCards).where(and(eq(bingoPlayerCards.roundId, lockedRound.id), eq(bingoPlayerCards.telegramId, user.telegramId), eq(bingoPlayerCards.cardNumber, cardNumber))).for("update").limit(1);
+      if (!card) return { released: false };
+      const reference = `bingo_reservation:${lockedRound.id}:${user.telegramId}:${cardNumber}`;
+      const [ledger] = await tx.select().from(walletTransactions).where(eq(walletTransactions.reference, reference)).limit(1);
+      const wallet = (ledger?.metadata as { wallet?: string } | null)?.wallet === "win" ? "win" : "play";
+      const balanceBefore = Number(wallet === "play" ? lockedUser.playWalletBalance : lockedUser.winWalletBalance);
+      const balanceAfter = (balanceBefore + CARD_STAKE).toFixed(2);
+      await tx.delete(bingoPlayerCards).where(eq(bingoPlayerCards.id, card.id));
+      await tx.update(telegramUsers).set({ ...(wallet === "play" ? { playWalletBalance: balanceAfter } : { winWalletBalance: balanceAfter }), updatedAt: new Date() }).where(eq(telegramUsers.telegramId, user.telegramId));
+      await tx.insert(walletTransactions).values({ telegramId: user.telegramId, type: "adjustment", amount: CARD_STAKE.toFixed(2), balanceBefore: balanceBefore.toFixed(2), balanceAfter, status: "completed", reference: `bingo_release:${lockedRound.id}:${user.telegramId}:${cardNumber}`, metadata: { roundId: lockedRound.id, cardNumber, stake: CARD_STAKE, wallet, source: reference } });
+      return { released: true, wallet, balance: balanceAfter };
+    });
+    res.json({ roundId: round.id, ...result });
+  } catch (error) {
+    const status = (error as { status?: number }).status;
+    if (status) { res.status(status).json({ error: (error as Error).message }); return; }
+    logger.error({ err: error }, "Failed to release Bingo card");
+    res.status(503).json({ error: "Card release unavailable" });
+  }
+});
+
 router.post("/bingo/cards", async (req, res) => {
   const user = await authenticatedUser(req);
   if (!user) { res.status(401).json({ error: "Valid Telegram authentication is required" }); return; }
