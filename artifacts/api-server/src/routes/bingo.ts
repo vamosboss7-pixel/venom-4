@@ -110,6 +110,13 @@ export async function advanceBingoRound() {
     round = { ...round, status: "playing" };
   }
   if (round.status === "selecting") return round;
+  if (round.status === "playing") {
+    const [card] = await db.select({ id: bingoPlayerCards.id }).from(bingoPlayerCards).where(eq(bingoPlayerCards.roundId, round.id)).limit(1);
+    if (!card) {
+      await db.update(bingoRounds).set({ status: "completed", completedAt: new Date() }).where(and(eq(bingoRounds.id, round.id), eq(bingoRounds.status, "playing")));
+      return ensureActiveBingoRound();
+    }
+  }
   const calls = await db.query.bingoCalls.findMany({ where: eq(bingoCalls.roundId, round.id), orderBy: [asc(bingoCalls.position)] });
   if (calls.length >= 75) {
     const winner = await resolveRoundWinner(round.id);
