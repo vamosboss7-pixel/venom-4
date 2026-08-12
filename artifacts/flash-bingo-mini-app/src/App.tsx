@@ -428,8 +428,11 @@ function Home() {
         setCountdown(Math.max(0, Math.ceil((new Date(data.selectionEndsAt).getTime() - Date.now()) / 1000)));
       }
     };
-    void loadRound().catch(() => undefined);
-    const timer = window.setInterval(() => { void loadRound().catch(() => undefined); }, 3000);
+    const reportRoundError = (error: unknown) => {
+      setDebugMessage(`Round load failed: ${error instanceof Error ? error.message : 'network error'}`);
+    };
+    void loadRound().catch(reportRoundError);
+    const timer = window.setInterval(() => { void loadRound().catch(reportRoundError); }, 3000);
     return () => { cancelled = true; window.clearInterval(timer); };
   }, []);
   const roundIdRef = useRef<number | null>(null);
