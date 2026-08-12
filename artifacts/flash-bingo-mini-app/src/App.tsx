@@ -323,7 +323,7 @@ function NumberGrid({ selected, taken, onToggle }: { selected: Set<number>; take
           const isSelected = selected.has(number);
           const isTaken = taken.has(number);
           return (
-            <button type="button" key={number} data-testid={`button-card-${number}`} disabled={isTaken} onClick={() => onToggle(number)} className={`depth-action relative aspect-square rounded-xl border text-xs font-bold transition-all duration-150 active:scale-90 ${isSelected ? 'border-[hsl(var(--primary))] bg-[hsl(var(--primary))] text-[hsl(var(--primary-foreground))] shadow-[0_4px_0_hsl(152_61%_30%)] -translate-y-0.5' : isTaken ? 'border-white/5 bg-white/[.025] text-[hsl(var(--muted-foreground)/.35)]' : 'border-white/10 bg-[hsl(161_35%_15%)] text-[hsl(var(--foreground)/.78)] hover:border-[hsl(var(--primary)/.7)] hover:bg-[hsl(var(--primary)/.1)]'}`}>
+            <button type="button" key={number} data-testid={`button-card-${number}`} disabled={isTaken && !isSelected} onClick={() => onToggle(number)} className={`depth-action relative aspect-square rounded-xl border text-xs font-bold transition-all duration-150 active:scale-90 ${isSelected ? 'border-[hsl(var(--primary))] bg-[hsl(var(--primary))] text-[hsl(var(--primary-foreground))] shadow-[0_4px_0_hsl(152_61%_30%)] -translate-y-0.5' : isTaken ? 'border-white/5 bg-white/[.025] text-[hsl(var(--muted-foreground)/.35)]' : 'border-white/10 bg-[hsl(161_35%_15%)] text-[hsl(var(--foreground)/.78)] hover:border-[hsl(var(--primary)/.7)] hover:bg-[hsl(var(--primary)/.1)]'}`}>
               {number}
               {isTaken && <span className="absolute inset-x-1.5 bottom-1 h-px rotate-[-28deg] bg-[hsl(var(--destructive)/.55)]" />}
               {isSelected && <span className="absolute right-1 top-0.5 text-[9px]">✓</span>}
@@ -397,6 +397,7 @@ function Home() {
   const [tab, setTab] = useState<Tab>('bingo');
   const [showWarning, setShowWarning] = useState(false);
   const [warningMessage, setWarningMessage] = useState('');
+  const [debugMessage, setDebugMessage] = useState('Loading round status...');
   const [round, setRound] = useState<RoundData | null>(null);
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
@@ -405,7 +406,10 @@ function Home() {
     let cancelled = false;
     const loadRound = async () => {
       const response = await fetch(`${getApiUrl()}/api/bingo/round`);
-      if (!response.ok) return;
+      if (!response.ok) {
+        setDebugMessage(`Round request failed: HTTP ${response.status}`);
+        return;
+      }
       const data = await response.json() as RoundData;
       if (cancelled) return;
       if (roundIdRef.current !== null && roundIdRef.current !== data.id) {
@@ -415,6 +419,7 @@ function Home() {
       const sameRound = roundIdRef.current === data.id;
       roundIdRef.current = data.id;
       setRound(data);
+      setDebugMessage(`Round #${data.id} · ${data.status} · selected ${selectedRef.current.size}/${MAX_CARDS} · taken ${data.takenCardNumbers.length}`);
       if (sameRound && data.status === 'playing' && selectedRef.current.size > 0) {
         setLocation(`/play?round=${data.id}`);
         return;
@@ -439,8 +444,16 @@ function Home() {
     window.setTimeout(() => setShowWarning(false), 3000);
   };
   const toggle = async (number: number) => {
-    if (pendingCardsRef.current.has(number) || round?.status !== 'selecting') return;
+    if (pendingCardsRef.current.has(number)) {
+      setDebugMessage(`Card #${number} is already processing`);
+      return;
+    }
+    if (round?.status !== 'selecting') {
+      setDebugMessage(`Card #${number} blocked: round status is ${round?.status ?? 'unknown'}`);
+      return;
+    }
     const isSelected = selected.has(number);
+    setDebugMessage(`${isSelected ? 'Releasing' : 'Reserving'} card #${number}...`);
     if (!isSelected && selected.size >= MAX_CARDS) {
       showCardWarning('You can select at most 4 cards');
       return;
@@ -462,13 +475,16 @@ function Home() {
         throw new Error(body.error ?? 'Card update failed');
       }
       setRound((current) => current ? { ...current, takenCardNumbers: isSelected ? current.takenCardNumbers.filter((card) => card !== number) : [...new Set([...current.takenCardNumbers, number])] } : current);
+      setDebugMessage(`Card #${number} ${isSelected ? 'released' : 'reserved'} successfully`);
     } catch (error) {
       setSelected((current) => {
         const next = new Set(current);
         if (isSelected) next.add(number); else next.delete(number);
         return next;
       });
-      showCardWarning(error instanceof Error ? error.message : 'Card update failed');
+      const message = error instanceof Error ? error.message : 'Card update failed';
+      setDebugMessage(`Card #${number} failed: ${message}`);
+      showCardWarning(message);
     } finally {
       pendingCardsRef.current.delete(number);
     }
@@ -481,6 +497,7 @@ function Home() {
         <SoundCountdown muted={muted} onToggle={() => setMuted((value) => !value)} countdown={countdown} />
         <div className="min-h-0 flex-1 overflow-y-auto"><NumberGrid selected={selected} taken={taken} onToggle={toggle} /></div>
         {selectedCards.length > 0 && <div className="pointer-events-none absolute bottom-[74px] left-0 right-0 z-10 flex gap-2 overflow-hidden bg-gradient-to-t from-[hsl(161_42%_9%)] to-transparent px-3 pb-2 pt-8">{selectedCards.map((id) => <MiniCard key={id} id={id} grid={buildCard(id)} />)}</div>}
+        <div data-testid="status-card-debug" className="absolute bottom-[76px] left-3 right-3 z-20 rounded-xl border border-white/10 bg-[hsl(161_35%_15%/.94)] px-3 py-1.5 text-center text-[10px] text-[hsl(var(--muted-foreground))]">DEBUG: {debugMessage} · pending {pendingCardsRef.current.size}</div>
         {showWarning && <div role="alert" data-testid="status-card-limit" className="absolute left-4 right-4 top-24 z-30 rounded-2xl border border-[hsl(var(--primary)/.6)] bg-[hsl(161_35%_15%/.98)] px-4 py-3 text-center text-sm font-bold text-[hsl(var(--primary))] shadow-xl animate-rise-in">{warningMessage || 'ከ4 ካርድ በላይ መምረጥ አይችሉም'}</div>}
       </div>}
     </AppShell>
